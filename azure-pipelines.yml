@@ -1,0 +1,144 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+#trigger:
+#- main
+#- dev
+
+#pool:
+#  vmImage: ubuntu-latest
+
+#steps:
+#- script: echo Hello, world!
+#  displayName: 'Run a one-line script'
+
+#- script: |
+#    echo Add other tasks to build, test, and deploy your project.
+#    echo See https://aka.ms/yaml
+#  displayName: 'Run a multi-line script'
+
+
+# azure-pipelines.yml
+trigger:
+  branches:
+    include:
+      - main
+      - dev
+
+pr:
+  branches:
+    include:
+      - dev
+
+variables:
+  # These are default fallback values
+  OrgAlias: ''
+  OrgType: ''
+  OrgUsername: ''
+  ClientId: ''
+  InstanceUrl: 'https://login.salesforce.com'
+
+stages:
+
+# === STAGE 1: VALIDATE ON PR ===
+- stage: ValidatePR
+  displayName: 'PR Validation (Dev Org)'
+  condition: eq(variables['Build.Reason'], 'PullRequest')
+  variables:
+    - group: sfdx-org-dev
+  jobs:
+    - job: ValidatePR
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: UseNode@1
+          inputs:
+            version: '16.x'
+          displayName: 'Use Node.js'
+
+        - bash: npm install sfdx-cli --global
+          displayName: 'Install Salesforce CLI'
+
+        - task: DownloadSecureFile@1
+          name: jwtKey
+          inputs:
+            secureFile: 'server.key'
+          displayName: 'Download JWT Key'
+
+        - bash: |
+            sfdx force:auth:jwt:grant \
+              --clientid $(ClientId) \
+              --jwtkeyfile $(jwtKey.secureFilePath) \
+              --username $(SalesforceUsername) \
+              --instanceurl $(InstanceUrl) \
+              --alias $(OrgAlias)
+          displayName: 'Authorize Dev Org'
+
+        - bash: |
+            sfdx force:source:deploy \
+              -x manifest/package.xml \
+              -u $(OrgAlias) \
+              -l RunLocalTests -c -w 10
+          displayName: 'Validate Metadata Deploy'
+
+        - bash: |
+            sfdx force:apex:test:run --resultformat human --codecoverage -u $(OrgAlias) --wait 10
+            coverage=$(sfdx force:apex:test:report -u $(OrgAlias) --codecoverage --outputdir coverage | grep -o '[0-9]*%' | tr -d '%')
+            if [ "$coverage" -lt 75 ]; then
+              echo "Code coverage below 75%: $coverage%"
+              exit 1
+            fi
+          displayName: 'Run Apex Tests & Check Coverage'
+
+        - bash: |
+            pmd-bin/bin/run.sh pmd -d force-app -R rulesets/apex/apex_ruleset.xml -f text
+          displayName: 'Run PMD Static Code Analysis'
+
+# === STAGE 2: DEPLOY AFTER MERGE TO MAIN ===
+- stage: Deploy
+  displayName: 'Deploy to Target Org'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  variables:
+    - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+        - group: sfdx-org-prod
+        - alias: prodOrg
+    - ${{ if eq(variables['Build.SourceBranchName'], 'dev') }}:
+        - group: sfdx-org-dev
+        - alias: devOrg
+  jobs:
+    - job: DeployMetadata
+      displayName: 'Deploy to Salesforce Org'
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: UseNode@1
+          inputs:
+            version: '16.x'
+          displayName: 'Use Node.js'
+
+        - bash: npm install sfdx-cli --global
+          displayName: 'Install Salesforce CLI'
+
+        - task: DownloadSecureFile@1
+          name: jwtKey
+          inputs:
+            secureFile: 'server.key'
+          displayName: 'Download JWT Key'
+
+        - bash: |
+            sfdx force:auth:jwt:grant \
+              --clientid $(ClientId) \
+              --jwtkeyfile $(jwtKey.secureFilePath) \
+              --username $(SalesforceUsername) \
+              --instanceurl $(InstanceUrl) \
+              --alias $(OrgAlias)
+          displayName: 'Authorize Org'
+
+        - bash: |
+            sfdx force:source:convert -r force-app -d mdapi_output
+            sfdx force:mdapi:deploy -d mdapi_output -u $(OrgAlias) -l RunLocalTests -w 10
+          displayName: 'Deploy Metadata to Org'
+
+
