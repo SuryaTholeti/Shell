@@ -1,36 +1,19 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
-#trigger:
-#- main
-#- dev
-
-#pool:
-#  vmImage: ubuntu-latest
-
-#steps:
-#- script: echo Hello, world!
-#  displayName: 'Run a one-line script'
-
-#- script: |
-#    echo Add other tasks to build, test, and deploy your project.
-#    echo See https://aka.ms/yaml
-#  displayName: 'Run a multi-line script'
-
-
-# azure-pipelines.yml
 trigger:
   branches:
     include:
-      - dev
       - main
+      - dev
+      - feature/*
+
+parameters:
+  - name: runManually
+    type: boolean
+    default: false
 
 stages:
   - stage: DeployToDev
     displayName: 'Deploy to Dev Environment'
-    condition: eq(variables['Build.SourceBranchName'], 'dev')
+    condition: "or(eq(variables['Build.SourceBranchName'], 'dev'), startsWith(variables['Build.SourceBranchName'], 'feature/'), eq('${{ parameters.runManually }}', true))"
     variables:
       - group: SF-Dev-Variables
     jobs:
@@ -61,23 +44,42 @@ stages:
                 --instanceurl $(SF_INSTANCE_URL)
             displayName: 'Authenticate to Salesforce (Dev)'
 
+          # Run PMD static analysis
+          - script: |
+              echo "Running PMD analysis"
+              # Add your PMD command here, example:
+              # pmd-bin/bin/run.sh pmd -d force-app -f text -R rulesets/apex/security.xml
+            displayName: 'Run PMD Static Code Analysis'
+
+          # Deploy with test coverage & validation
           - script: |
               sfdx force:source:deploy ^
                 --sourcepath force-app ^
                 --targetusername $(SF_USERNAME) ^
+                --testlevel RunLocalTests ^
+                --checkonly ^
+                --wait 10
+            displayName: 'Validate Deployment and Run Apex Tests (Dev)'
+
+          # Actual deploy only if validation passed
+          - script: |
+              sfdx force:source:deploy ^
+                --sourcepath force-app ^
+                --targetusername $(SF_USERNAME) ^
+                --testlevel RunLocalTests ^
                 --ignorewarnings ^
                 --wait 10
-            displayName: 'Deploy Source to Dev Org'
+            displayName: 'Deploy to Dev Org'
 
   - stage: DeployToProd
     displayName: 'Deploy to Production Environment'
-    condition: eq(variables['Build.SourceBranchName'], 'main')
+    condition: "or(eq(variables['Build.SourceBranchName'], 'main'), eq('${{ parameters.runManually }}', true))"
     variables:
       - group: SF-Prod-Variables
     jobs:
       - deployment: DeployProd
         displayName: 'Production Deployment'
-        environment: 'Production'  # Uses Azure DevOps Environment
+        environment: 'Production'  # Azure DevOps environment for approvals
         strategy:
           runOnce:
             deploy:
@@ -106,10 +108,28 @@ stages:
                       --instanceurl $(SF_INSTANCE_URL)
                   displayName: 'Authenticate to Salesforce (Prod)'
 
+                # Run PMD static analysis
+                - script: |
+                    echo "Running PMD analysis"
+                    # Add your PMD command here
+                  displayName: 'Run PMD Static Code Analysis'
+
+                # Validate deployment and run tests before actual deploy
                 - script: |
                     sfdx force:source:deploy ^
                       --sourcepath force-app ^
                       --targetusername $(SF_USERNAME) ^
+                      --testlevel RunLocalTests ^
+                      --checkonly ^
+                      --wait 10
+                  displayName: 'Validate Deployment and Run Apex Tests (Prod)'
+
+                # Actual deploy after successful validation
+                - script: |
+                    sfdx force:source:deploy ^
+                      --sourcepath force-app ^
+                      --targetusername $(SF_USERNAME) ^
+                      --testlevel RunLocalTests ^
                       --ignorewarnings ^
                       --wait 10
-                  displayName: 'Deploy Source to Production Org'
+                  displayName: 'Deploy to Production Org'
