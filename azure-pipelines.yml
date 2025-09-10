@@ -1,36 +1,17 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
-#trigger:
-#- main
-#- dev
-
-#pool:
-#  vmImage: ubuntu-latest
-
-#steps:
-#- script: echo Hello, world!
-#  displayName: 'Run a one-line script'
-
-#- script: |
-#    echo Add other tasks to build, test, and deploy your project.
-#    echo See https://aka.ms/yaml
-#  displayName: 'Run a multi-line script'
-
-
-# azure-pipelines.yml
 trigger:
   branches:
     include:
-      - dev
       - main
+      - dev
+      - feature/*
+
+pool:
+  vmImage: ubuntu-latest
 
 stages:
   - stage: DeployToDev
     displayName: 'Deploy to Dev Environment'
-    condition: eq(variables['Build.SourceBranchName'], 'dev')
+    condition: or(eq(variables['Build.SourceBranchName'], 'dev'), startsWith(variables['Build.SourceBranchName'], 'feature/'))
     variables:
       - group: SF-Dev-Variables
     jobs:
@@ -51,23 +32,35 @@ stages:
 
           - script: |
               npm install -g sfdx-cli
-            displayName: 'Install Salesforce CLI'
+              echo "Installing PMD"
+              npm install -g pmd-bin
+            displayName: 'Install Salesforce CLI and PMD'
 
           - script: |
-              sfdx auth:jwt:grant ^
-                --clientid $(SF_CLIENT_ID) ^
-                --jwtkeyfile $(GetJWTKey.secureFilePath) ^
-                --username $(SF_USERNAME) ^
+              sfdx auth:jwt:grant \
+                --clientid $(SF_CLIENT_ID) \
+                --jwtkeyfile $(GetJWTKey.secureFilePath) \
+                --username $(SF_USERNAME) \
                 --instanceurl $(SF_INSTANCE_URL)
             displayName: 'Authenticate to Salesforce (Dev)'
 
           - script: |
-              sfdx force:source:deploy ^
-                --sourcepath force-app ^
-                --targetusername $(SF_USERNAME) ^
-                --ignorewarnings ^
-                --wait 10
-            displayName: 'Deploy Source to Dev Org'
+              echo "Running PMD Code Analysis"
+              pmd-bin run pmd \
+                -d force-app \
+                -R category/apex/design.xml \
+                -f text
+            displayName: 'Run PMD Static Code Analysis'
+
+          - script: |
+              echo "Running Tests & Deploying Code"
+              sfdx force:source:deploy \
+                --sourcepath force-app \
+                --targetusername $(SF_USERNAME) \
+                --ignorewarnings \
+                --wait 10 \
+                --testlevel RunLocalTests
+            displayName: 'Deploy Source to Dev Org with Tests'
 
   - stage: DeployToProd
     displayName: 'Deploy to Production Environment'
@@ -77,7 +70,7 @@ stages:
     jobs:
       - deployment: DeployProd
         displayName: 'Production Deployment'
-        environment: 'Production'  # Uses Azure DevOps Environment
+        environment: 'Production'
         strategy:
           runOnce:
             deploy:
@@ -99,17 +92,18 @@ stages:
                   displayName: 'Install Salesforce CLI'
 
                 - script: |
-                    sfdx auth:jwt:grant ^
-                      --clientid $(SF_CLIENT_ID) ^
-                      --jwtkeyfile $(GetJWTKey.secureFilePath) ^
-                      --username $(SF_USERNAME) ^
+                    sfdx auth:jwt:grant \
+                      --clientid $(SF_CLIENT_ID) \
+                      --jwtkeyfile $(GetJWTKey.secureFilePath) \
+                      --username $(SF_USERNAME) \
                       --instanceurl $(SF_INSTANCE_URL)
                   displayName: 'Authenticate to Salesforce (Prod)'
 
                 - script: |
-                    sfdx force:source:deploy ^
-                      --sourcepath force-app ^
-                      --targetusername $(SF_USERNAME) ^
-                      --ignorewarnings ^
-                      --wait 10
-                  displayName: 'Deploy Source to Production Org'
+                    sfdx force:source:deploy \
+                      --sourcepath force-app \
+                      --targetusername $(SF_USERNAME) \
+                      --ignorewarnings \
+                      --wait 10 \
+                      --testlevel RunLocalTests
+                  displayName: 'Deploy Source to Production Org with Tests'
