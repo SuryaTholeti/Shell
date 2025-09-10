@@ -26,6 +26,7 @@ trigger:
     include:
       - dev
       - main
+      - feature/*
 
 stages:
   - stage: DeployToDev
